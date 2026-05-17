@@ -8,12 +8,20 @@ public class Game {
 
     private static final int START_SOLDIERS = 5;
     private static final double MIN_AI_ATTACK_CHANCE = 0.55;
+    private static final double MIN_AI_LEADER_ATTACK_CHANCE = 0.45;
     private static final double ISOLATED_DEFENSE_FACTOR = 0.75;
     private static final double CUT_OFF_DEFENSE_FACTOR = 0.85;
+    private static final double FIELD_REINFORCEMENT_CAP_RATIO = 0.50;
+    private static final double LEADER_FIELD_RATIO = 0.50;
+    private static final double VULNERABLE_FIELD_RATIO = 0.10;
+    private static final int LEADER_ATTACK_SCORE_BONUS = 12;
+    private static final int WEAK_TARGET_ATTACK_SCORE_BONUS = 10;
+    private static final int WEAK_TARGET_ELIMINATION_BONUS = 2;
 
     private final int size;
     private final Field[][] board;
     private final Random random = new Random();
+    private final int[] nextTurnBonusSoldiers = new int[PLAYERS.length];
 
     private int currentPlayerIndex;
     private int roundStartIndex;
@@ -45,6 +53,15 @@ public class Game {
             case 'D' -> "Gelb";
             default -> "Unbekannt";
         };
+    }
+
+    private static int playerIndex(char player) {
+        for (int i = 0; i < PLAYERS.length; i++) {
+            if (PLAYERS[i] == player) {
+                return i;
+            }
+        }
+        throw new IllegalArgumentException("Unbekannter Spieler: " + player);
     }
 
     public int getSize() {
@@ -252,7 +269,9 @@ public class Game {
         Field source = getField(from);
         Field target = getField(to);
         char attacker = source.getOwner();
+        char defender = target.getOwner();
         int defenders = target.getSoldiers();
+        boolean weakTargetAttack = isAttackAgainstWeakTarget(new Attack(from, to));
         double effectiveDefenders = effectiveDefenders(to);
         double chance = attackers / (attackers + effectiveDefenders);
         boolean success = random.nextDouble() < chance;
@@ -261,6 +280,9 @@ public class Game {
         if (success) {
             target.setOwner(attacker);
             target.setSoldiers(Math.max(2, attackers - defenders / 2));
+            if (weakTargetAttack && countFields(defender) == 0) {
+                nextTurnBonusSoldiers[playerIndex(attacker)] += WEAK_TARGET_ELIMINATION_BONUS;
+            }
         } else {
             target.setSoldiers(Math.max(1, defenders - attackers / 2));
         }
@@ -414,12 +436,29 @@ public class Game {
 
     private void startTurn() {
         char player = getCurrentPlayer();
-        pendingReinforcements = Math.max(3, countFields(player) / 2)
+        pendingReinforcements = fieldReinforcements(player)
                 + countControlledQuadrants(player) * quadrantBonus()
                 + comebackBonus(player)
-                + firstRoundOffsetBonus();
+                + firstRoundOffsetBonus()
+                + consumeNextTurnBonus(player);
         attacksThisTurn = 0;
         fortificationDone = false;
+    }
+
+    private int consumeNextTurnBonus(char player) {
+        int playerIndex = playerIndex(player);
+        int bonus = nextTurnBonusSoldiers[playerIndex];
+        nextTurnBonusSoldiers[playerIndex] = 0;
+        return bonus;
+    }
+
+    private int fieldReinforcements(char player) {
+        int cappedFields = Math.min(countFields(player), fieldReinforcementCap());
+        return Math.max(3, cappedFields / 2);
+    }
+
+    private int fieldReinforcementCap() {
+        return Math.max(4, (int) Math.round(size * size * FIELD_REINFORCEMENT_CAP_RATIO));
     }
 
     private int quadrantBonus() {
@@ -490,7 +529,9 @@ public class Game {
         int chanceScore = from.getSoldiers() - to.getSoldiers();
         int weakTargetScore = Math.max(0, 8 - to.getSoldiers());
         int quadrantScore = wouldCompleteQuadrant(attack.from(), attack.to()) ? 5 : 0;
-        return chanceScore + weakTargetScore + quadrantScore;
+        int leaderScore = isAttackAgainstDominantPlayer(attack) ? LEADER_ATTACK_SCORE_BONUS : 0;
+        int weakPlayerScore = isAttackAgainstWeakTarget(attack) ? WEAK_TARGET_ATTACK_SCORE_BONUS : 0;
+        return chanceScore + weakTargetScore + quadrantScore + leaderScore + weakPlayerScore;
     }
 
     private double attackChance(Attack attack) {
@@ -501,11 +542,78 @@ public class Game {
     private List<Attack> worthwhileAttacks(char player) {
         List<Attack> worthwhile = new ArrayList<>();
         for (Attack attack : possibleAttacks(player)) {
-            if (attackChance(attack) >= MIN_AI_ATTACK_CHANCE || wouldCompleteQuadrant(attack.from(), attack.to())) {
+            double minimumChance = minimumAttackChance(attack);
+            if (attackChance(attack) >= minimumChance || wouldCompleteQuadrant(attack.from(), attack.to())) {
                 worthwhile.add(attack);
             }
         }
         return worthwhile;
+    }
+
+    private double minimumAttackChance(Attack attack) {
+        double minimumChance = MIN_AI_ATTACK_CHANCE;
+        if (isAttackAgainstDominantPlayer(attack)) {
+            minimumChance = Math.min(minimumChance, MIN_AI_LEADER_ATTACK_CHANCE);
+        }
+        if (isAttackAgainstWeakTarget(attack)) {
+            minimumChance = Math.min(minimumChance, MIN_AI_LEADER_ATTACK_CHANCE);
+        }
+        return minimumChance;
+    }
+
+    private boolean isAttackAgainstDominantPlayer(Attack attack) {
+        char dominantPlayer = dominantPlayer();
+        return dominantPlayer != '-'
+                && getField(attack.from()).getOwner() != dominantPlayer
+                && getField(attack.to()).getOwner() == dominantPlayer;
+    }
+
+    private char dominantPlayer() {
+        int totalFields = size * size;
+        for (char player : PLAYERS) {
+            if (countFields(player) > totalFields * LEADER_FIELD_RATIO) {
+                return player;
+            }
+        }
+        return '-';
+    }
+
+    private boolean isAttackAgainstWeakTarget(Attack attack) {
+        char attacker = getField(attack.from()).getOwner();
+        char target = weakestVulnerablePlayer(attacker);
+        return target != '-' && getField(attack.to()).getOwner() == target;
+    }
+
+    private char weakestVulnerablePlayer(char attacker) {
+        if (attacker != strongestPlayerBySoldiers()) {
+            return '-';
+        }
+
+        int maximumFields = Math.max(1, (int) Math.floor(size * size * VULNERABLE_FIELD_RATIO));
+        char weakestPlayer = '-';
+        int weakestFields = Integer.MAX_VALUE;
+        for (char player : PLAYERS) {
+            int fields = countFields(player);
+            if (player != attacker && fields > 0 && fields <= maximumFields && fields < weakestFields) {
+                weakestPlayer = player;
+                weakestFields = fields;
+            }
+        }
+        return weakestPlayer;
+    }
+
+    private char strongestPlayerBySoldiers() {
+        char strongestPlayer = '-';
+        int strongestSoldiers = -1;
+        for (char player : PLAYERS) {
+            int fields = countFields(player);
+            int soldiers = totalSoldiers(player);
+            if (fields > 0 && soldiers > strongestSoldiers) {
+                strongestPlayer = player;
+                strongestSoldiers = soldiers;
+            }
+        }
+        return strongestPlayer;
     }
 
     private double effectiveDefenders(Position position) {

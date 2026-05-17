@@ -21,6 +21,7 @@ Der aktuelle Prototyp ist ein kleines Swing-Fensterspiel als Simulation:
 - Jedes Feld zeigt Besitzer und Soldatenzahl.
 - Felder sind nach Spielerfarbe markiert.
 - Wer einen ganzen Quadranten kontrolliert, bekommt je nach Kartengroesse Bonus-Soldaten.
+- Die normale Verstaerkung durch kontrollierte Felder ist gedeckelt: Ab etwa `50%` der Karte steigt sie nicht weiter.
 - Das Angriffslimit ist dynamisch: Wer mehr Felder kontrolliert, bekommt mehr moegliche Angriffe pro Zug.
 - Die KI greift nur an, wenn die Chance sinnvoll ist oder ein Quadrant dadurch erobert werden kann.
 - Felder im Hauptgebiet verteidigen normal mit `100%`.
